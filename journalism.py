@@ -173,9 +173,14 @@ async def main() -> None:
     
         # Stream the agent's response
         full_response = ""
+        printed_queries = set()
         async for update in agent.run_stream(input_message):
-            search_queries = _extract_search_queries_from_update(update)
+            search_queries = [
+                query for query in _extract_search_queries_from_update(update)
+                if query not in printed_queries
+            ]
             if search_queries:
+                printed_queries.update(search_queries)
                 query_text = ", ".join(search_queries)
                 console.print(Text(f"\n🔍 Search query: {query_text}\n", style="bold yellow"))
 
