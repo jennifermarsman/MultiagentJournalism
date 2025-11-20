@@ -1,18 +1,69 @@
 import asyncio
 import datetime
 import os
+from collections.abc import Mapping, Sequence
 from dotenv import load_dotenv
-from typing import List, Sequence, Optional
 from rich.console import Console
 from rich.text import Text
 from rich.markdown import Markdown
-
-# Microsoft Agent Framework imports
 from agent_framework.azure import AzureOpenAIResponsesClient
-from azure.identity import DefaultAzureCredential, AzureCliCredential
-from azure.core.credentials import AzureKeyCredential
-from typing import Any, Never
-from typing_extensions import Never
+from azure.identity import DefaultAzureCredential
+
+
+def _normalize_query_values(value):
+    """Return a flat list of query strings from arbitrary nested values."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return [cleaned] if cleaned else []
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        normalized = []
+        for item in value:
+            normalized.extend(_normalize_query_values(item))
+        return normalized
+    return [str(value).strip()]
+
+
+def _collect_search_queries(payload):
+    """Search recursively for fields that contain search query information."""
+    if payload is None:
+        return []
+    if isinstance(payload, str):
+        lowered = payload.lower()
+        if "query" in lowered:
+            return [payload.strip()]
+        return []
+    if isinstance(payload, Mapping):
+        collected = []
+        for key, value in payload.items():
+            key_lower = str(key).lower()
+            if key_lower in {"query"}:
+                collected.extend(_normalize_query_values(value))
+            else:
+                collected.extend(_collect_search_queries(value))
+        return collected
+    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes, bytearray)):
+        collected = []
+        for item in payload:
+            collected.extend(_collect_search_queries(item))
+        return collected
+    if hasattr(payload, "__dict__"):
+        return _collect_search_queries(vars(payload))
+    return []
+
+
+def _extract_search_queries_from_update(update):
+    """Deduplicate and preserve the order of any search queries found."""
+    raw_queries = _collect_search_queries(update)
+    deduped = []
+    seen = set()
+    for query in raw_queries:
+        normalized = query.strip()
+        if normalized and normalized not in seen:
+            seen.add(normalized)
+            deduped.append(normalized)
+    return deduped
 
 
 async def main() -> None:
@@ -81,14 +132,16 @@ async def main() -> None:
     
     # Get user input for article requirements
     console.print("\n[bold cyan]Starting Article Creation Workflow[/bold cyan]\n")
-    
     text = Text()
     text.append("User Input: ", style="bold magenta")
     text.append("\nWhat article would you like me to write? Please describe the topic, key questions, and any starting points.")
     console.print(text)
     
+    # Human in the loop for initial requirements
     console.print("\nHuman Journalist:", style="bold magenta")
     user_requirements = input(">> ")
+    # Include today's date for context - in the news world, recency matters
+    user_requirements += " Today's date is " + str(datetime.date.today())
     
     conversation_history = []
     
@@ -101,7 +154,7 @@ async def main() -> None:
         ("Verifier", verifier_agent),
         ("Final Reviewer", final_review_agent)
     ]
-        
+    
     for agent_name, agent in agents:
         # Prepare the input for this agent
         if not conversation_history:
@@ -118,14 +171,17 @@ async def main() -> None:
         # Print agent header
         text = Text()
         text.append(f"\n🤖 {agent_name}:", style="bold magenta")
-        #text.append(f"{'─' * 80}", style="bold magenta")
         console.print(text)
     
         # Stream the agent's response
         full_response = ""
         async for update in agent.run_stream(input_message):
+            search_queries = _extract_search_queries_from_update(update)
+            if search_queries:
+                query_text = ", ".join(search_queries)
+                console.print(Text(f"\n🔍 Search query: {query_text}\n", style="bold yellow"))
+
             # Print streaming output
-            # TODO: make this markdown?
             if update.text:
                 print(update.text, end="", flush=True)
                 full_response += update.text
@@ -134,12 +190,6 @@ async def main() -> None:
         
         # Add to conversation history
         conversation_history.append(f"{agent_name}: {full_response.strip()}")
-    
-    print(f"\n{'=' * 80}")
-    print("CONVERSATION COMPLETE")
-    print(f"{'=' * 80}")
-
-    # TODO: print the final version in markdown?  
 
     console.print("\n[bold green]Article creation process completed![/bold green]")
 
