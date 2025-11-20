@@ -85,8 +85,6 @@ async def main() -> None:
         credential=credential
     )
 
-    # TODO: error handling if API key is missing or invalid, or other env variables not set
-    
     # Initialize console for rich output
     console = Console()
     
